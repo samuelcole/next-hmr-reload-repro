@@ -6,11 +6,13 @@
     "start": "next start"
   },
   "dependencies": {
-    "next": "canary",
+    "@vercel/blob": "2.8.1",
+    "next": "16.4.1",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@types/node": "^22",
     "@types/react": "^19",
     "typescript": "^5"

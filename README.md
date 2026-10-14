@@ -1,45 +1,57 @@
-This is a [Next.js](https://nextjs.org/) template to use when reporting a [bug in the Next.js repository](https://github.com/vercel/next.js/issues) with the `app/` directory.
+# next dev reloads a page in a loop after a restart with a changed `NEXT_PUBLIC_` value (Turbopack dev cache)
 
-## Getting Started
-
-These are the steps you should follow when creating a bug report:
-
-- Bug reports must be verified against the `next@canary` release. The canary version of Next.js ships daily and includes all features and fixes that have not been released to the stable version yet. Think of canary as a public beta. Some issues may already be fixed in the canary version, so please verify that your issue reproduces before opening a new issue. Issues not verified against `next@canary` will be closed after 30 days.
-- Make sure your issue is not a duplicate. Use the [GitHub issue search](https://github.com/vercel/next.js/issues) to see if there is already an open issue that matches yours. If that is the case, upvoting the other issue's first comment is desirable as we often prioritize issues based on the number of votes they receive. Note: Adding a "+1" or "same issue" comment without adding more context about the issue should be avoided. If you only find closed related issues, you can link to them using the issue number and `#`, eg.: `I found this related issue: #3000`.
-- If you think the issue is not in Next.js, the best place to ask for help is our [Discord community](https://nextjs.org/discord) or [GitHub discussions](https://github.com/vercel/next.js/discussions). Our community is welcoming and can often answer a project-related question faster than the Next.js core team.
-- Make the reproduction as minimal as possible. Try to exclude any code that does not help reproducing the issue. E.g. if you experience problems with Routing, including ESLint configurations or API routes aren't necessary. The less lines of code is to read through, the easier it is for the Next.js team to investigate. It may also help catching bugs in your codebase before publishing an issue.
-- Don't forget to create a new repository on GitHub and make it public so that anyone can view it and reproduce it.
-
-## How to use this template
-
-Execute [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app) with [npm](https://docs.npmjs.com/cli/init), [Yarn](https://yarnpkg.com/lang/en/docs/cli/create/), or [pnpm](https://pnpm.io) to bootstrap the example:
+## Run it
 
 ```bash
-npx create-next-app --example reproduction-template reproduction-app
+pnpm install
+pnpm exec playwright install chromium
+node repro.mjs
 ```
 
-```bash
-yarn create next-app --example reproduction-template reproduction-app
+`repro.mjs` starts `next dev` three times on the same `.next`, which keeps Turbopack's dev filesystem cache between sessions.
+
+- **Session 1** builds the cache: it loads `/a`, does `router.push("/b")`, then loads `/c`.
+- **Sessions 2 and 3** each start with a different `NEXT_PUBLIC_VALUE` and POST to a route handler (`/api/ping`). They then load `/a` and count document loads for 6 seconds.
+
+`/a` renders a client component that reads `process.env.NEXT_PUBLIC_VALUE`.
+
+## Expected and observed
+
+Expected: 1 load of `/a` per session.
+
+Observed on 16.4.1:
+
+```
+session 1 (build cache): 2 loads of /a, /c
+session 2: 240 loads of /a
+session 3: 244 loads of /a
 ```
 
-```bash
-pnpm create next-app --example reproduction-template reproduction-app
-```
+The dev server logs `GET /a 200` followed by `✓ Compiled` on every reload.
 
-## Learn More
+| next | sessions 2–3 loop |
+|---|---|
+| 16.3.8 | no (2 of 2 runs clean) |
+| 16.4.1 | yes (6 of 6 runs) |
+| 16.5.0-canary.11 | yes (1 of 2 runs) |
 
-To learn more about Next.js, take a look at the following resources:
+## Each ingredient is needed (16.4.1)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [How to Contribute to Open Source (Next.js)](https://www.youtube.com/watch?v=cuoNzXFLitc) - a video tutorial by Lee Robinson
-- [Triaging in the Next.js repository](https://github.com/vercel/next.js/blob/canary/contributing.md#triaging) - how we work on issues
-- [CodeSandbox](https://codesandbox.io/s/github/vercel/next.js/tree/canary/examples/reproduction-template) - Edit this repository on CodeSandbox
+| change | result |
+|---|---|
+| `FIXED_VALUE=1` (same `NEXT_PUBLIC_VALUE` every session) | no loop, 2 of 2 |
+| `NO_POST=1` (no route handler request before the page) | no loop, 2 of 2 |
+| session 1 loads only `/a` | no loop, 4 of 4 |
+| session 1: `/a`, then a full load of `/c`, with no `router.push` | no loop, 4 of 4 |
+| session 1: `/a`, then `router.push("/b")`, with no full load of `/c` | no loop, 4 of 4 |
+| `experimental.turbopackFileSystemCacheForDev: false` | no loop (observed in the app this was reduced from) |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+## What the dev server does
 
-## Deployment
+Seen by logging inside `next/dist/server/dev/hot-reloader-turbopack.js` during a looping session:
 
-If your reproduction needs to be deployed, the easiest way is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- Each load subscribes to two chunk lists. The page's own list's first emission is `issues`. The list for the **main client entry** (react-dom, the Next client) has a first emission of `restart`, on every load.
+- `subscribeToClientHmrEvents` forwards any first emission other than `issues` through `sendTurbopackMessage`. That bumps `clientHmrVersion`, so the page's next `turbopack-subscribe` carries a stale `hmrVersion`, gets `RELOAD_PAGE` "HMR hash mismatch", and the loop repeats.
+- The main entry's chunk files are byte-identical between the session that built the cache and the looping one.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Reading the 16.4.1 source (not verified by instrumentation): `update_chunk_list` returns `Update::Total` when the `from` version isn't a `ChunkListVersion`, i.e. a `NotFoundVersion`. That points at the baseline taken in `Project::hmr_version_state`, through `VersionedContentMap::get` → `raw_get`, coming back empty for the entry chunk list. `raw_get` uses the first operation in `map_path_to_op[path]`.

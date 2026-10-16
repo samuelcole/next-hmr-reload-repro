@@ -18,7 +18,11 @@ const results = [];
 for (let s = 1; s <= sessions; s++) {
   const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "-p", String(port)], {
     detached: true,
-    env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1", NEXT_PUBLIC_VALUE: process.env.FIXED_VALUE ? "fixed" : `session-${s}-${Date.now()}` },
+    env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1", NEXT_PUBLIC_VALUE: process.env.FIXED_VALUE ? "fixed" : `session-${s}-${Date.now()}`,
+      // Server-only: read by /a's server component, or by nothing.
+      SERVER_VALUE: process.env.SERVER_VARY ? `session-${s}-${Date.now()}` : "fixed",
+      UNUSED_VALUE: process.env.UNUSED_VARY ? `session-${s}-${Date.now()}` : "fixed",
+    },
   });
   let log = "";
   server.stdout.on("data", (d) => (log += d));

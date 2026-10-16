@@ -39,12 +39,33 @@ The dev server logs `GET /a 200` followed by `✓ Compiled` on every reload.
 
 | change | result |
 |---|---|
-| `FIXED_VALUE=1` (same `NEXT_PUBLIC_VALUE` every session) | no loop, 2 of 2 |
+| `FIXED_VALUE=1` (same `NEXT_PUBLIC_VALUE` every session) | rarely loops; see below |
 | `NO_POST=1` (no route handler request before the page) | no loop, 2 of 2 |
 | session 1 loads only `/a` | no loop, 4 of 4 |
 | session 1: `/a`, then a full load of `/c`, with no `router.push` | no loop, 4 of 4 |
 | session 1: `/a`, then `router.push("/b")`, with no full load of `/c` | no loop, 4 of 4 |
 | `experimental.turbopackFileSystemCacheForDev: false` | no loop (observed in the app this was reduced from) |
+
+## A restart with nothing changed can loop too
+
+With `FIXED_VALUE=1` nothing the client bundle inlines changes, yet a restart
+sometimes loops anyway. Server-only variables make no difference. `repro.mjs` also
+passes `SERVER_VALUE`, which `/a`'s server component renders, and `UNUSED_VALUE`,
+which nothing reads. Six runs of `node repro.mjs 4` each, so 18 restarts per row:
+
+| env | restarts that looped |
+|---|---|
+| `FIXED_VALUE=1` (nothing changes) | 1 of 18 |
+| `FIXED_VALUE=1 UNUSED_VARY=1` (an unread variable changes) | 1 of 18 |
+| `FIXED_VALUE=1 SERVER_VARY=1` (a variable read during render changes) | 1 of 18 |
+| neither (`NEXT_PUBLIC_VALUE` changes) | every restart |
+
+A looping restart reloads about 200 times in 6 seconds, the same as the
+`NEXT_PUBLIC_` case, and the next restart is usually clean. In the larger app
+this was reduced from, a restart with no `NEXT_PUBLIC_` change, on a cache the
+previous session had just built, looped in 3 of 3 runs. A bigger app seems to
+make it more likely. So a changed `NEXT_PUBLIC_` value makes the loop reliable
+here, but it is not the only way in.
 
 ## What the dev server does
 
